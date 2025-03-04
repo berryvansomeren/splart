@@ -20,11 +20,10 @@ in addition to the dependencies in pyproject.toml.
 
 ### Todos:
 
-Double check all logic, you should always be using the nn.Parameter version of the tensors
--> You need to fix a conceptual issue with the persistent mask
--> There should be a separate mask for "samples rendered" and "samples optimized"
+Add a brush scale multiplier. Loss goes down to 0.11 but by that time, brushes are way too small.
+Perhaps x2 is a good start?
 
-Debug using a non-square image! Colors seem not to correspond
+Debug sampling using a non-square image! Colors seem not to correspond to sampling locations
 
 Add Redraw
 Add automatic target image size selection

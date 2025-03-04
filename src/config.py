@@ -126,9 +126,9 @@ def make_full_config(
 def load_training_config() -> TrainingConfig:
 
     # Quick!
-    return make_full_config(
-        n_epochs_growth_phase=100, growth_interval=1, n_growth_samples=1, n_loss_perturbation_epochs=50
-    )
+    # return make_full_config(
+    #     n_epochs_growth_phase=100, growth_interval=1, n_growth_samples=1, n_loss_perturbation_epochs=50
+    # )
 
     # Quality!
     return make_full_config(
