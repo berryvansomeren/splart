@@ -20,15 +20,12 @@ in addition to the dependencies in pyproject.toml.
 
 ### Todos:
 
-Add a brush scale multiplier. Loss goes down to 0.11 but by that time, brushes are way too small.
-Perhaps x2 is a good start?
-
-Debug sampling using a non-square image! Colors seem not to correspond to sampling locations
-
 Add Redraw
-Add automatic target image size selection
-Add running batches
 Have fun! Create some art!
-Use difference image to further guide splat placement
+Use difference-image to further guide splat placement
+
+Double check rotation. Do we need to invert it too? 
+- Not high prio, as it's okay to have a definition not human-readable, 
+- as long as the optimizer can optimize correctly
 
 

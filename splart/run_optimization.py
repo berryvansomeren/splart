@@ -9,12 +9,11 @@ from PIL import Image
 import random
 import matplotlib.pyplot as plt
 
-from config import load_training_config, TrainingConfig
-from grow import in_place_add_samples_starting_from
-from loss_perturbation import get_perturbed_loss
-from renderer import render_2d_texture_splatting
-from splat_components import init_empty_splat_weights
-from make_gif import write_gif_for_folder
+from splart.training_config import TrainingConfig
+from splart.grow import in_place_add_samples_starting_from
+from splart.renderer import render_2d_texture_splatting
+from splart.splat_components import init_empty_splat_weights, unpack, Columns
+from splart.make_gif import write_gif_for_folder
 
 
 def set_random_seeds() -> None:
@@ -26,19 +25,16 @@ def set_random_seeds() -> None:
 
 
 def _load_target_image(config: TrainingConfig) -> tuple[torch.Tensor, np.ndarray]:
-    image_file = (
-        Image.open(config.target_image_file_path)
-        .resize((config.target_image_load_size[1], config.target_image_load_size[0]))
-        .convert("RGB")
-    )
+    # PIL uses W,H order!
+    image_file = Image.open(config.target_image_path).resize(config.target_image_load_size.as_w_h()).convert("RGB")
     target_image_np = np.array(image_file) / 255.0
     target_image_tensor = torch.tensor(target_image_np, dtype=torch.float32, device=config.device)
     return target_image_tensor, target_image_np
 
 
 def _load_texture(config: TrainingConfig) -> torch.Tensor:
-    texture_size_2d = (config.texture_load_size, config.texture_load_size)
-    texture_file = Image.open(config.texture_image_file_path).convert("RGB").resize(texture_size_2d)
+    # PIL uses W,H order!
+    texture_file = Image.open(config.texture_image_path).resize(config.texture_load_size.as_w_h()).convert("RGB")
     texture_np = np.array(texture_file)  # Shape: (H, W, 3)
     red_channel_np = texture_np[..., 0] / 255.0  # Extract Red channel (H, W)
     texture_tensor = torch.tensor(red_channel_np, dtype=torch.float32, device=config.device)
@@ -93,7 +89,19 @@ def init_persistent_mask(config: TrainingConfig) -> torch.Tensor:
     return persistent_mask
 
 
-def main(config: TrainingConfig) -> None:
+def get_perturbed_loss(
+    current_loss: float,
+    current_epoch: int,
+    n_loss_perturbation_epochs: int,
+    expected_loss_after_perturbation_epochs: float,
+) -> float:
+    current_epoch_t: float = current_epoch / n_loss_perturbation_epochs
+    current_linear_loss: float = (1 - current_epoch_t) * 1 + current_epoch_t * expected_loss_after_perturbation_epochs
+    current_perturbed_loss: float = (1 - current_epoch_t) * current_linear_loss + current_epoch_t * current_loss
+    return current_perturbed_loss
+
+
+def run_optimization(config: TrainingConfig) -> None:
     run_start = datetime.now()
     set_random_seeds()
 
@@ -103,6 +111,10 @@ def main(config: TrainingConfig) -> None:
 
     target_image, target_image_np = _load_target_image(config)
     texture = _load_texture(config)
+
+    scaled_input_image_path = os.path.join(output_folder, "input_image.png")
+    print(f"Writing scaled input image to {scaled_input_image_path}")
+    _write_image(image_array=target_image_np, image_path=scaled_input_image_path)
 
     current_l1_loss_value = 1.0
     perturbed_loss = 1.0
@@ -192,16 +204,37 @@ def main(config: TrainingConfig) -> None:
         if do_pruning:
             # Prune splats with low gradients
             # They will still be rendered, but no longer optimized!
+            # This is intended to stop optimizing splats that already have near-optimal components
+            # Of course later splats could change the situation again,
+            # but it's nice to allow some pruning for the sake of performance,
+            # and to reinforce the "painting" effect, where older paint is no longer changed
+            # once new paint is applied on top
             gradient_norms = torch.norm(splat_weights.grad, dim=1, p=2)
             gradient_norms_small_bools_non_masked = gradient_norms < config.pruning_gradient_threshold
             gradient_norms_small_bools = gradient_norms_small_bools_non_masked & samples_optimization_mask
             indices_to_remove_based_on_gradient = gradient_norms_small_bools.nonzero(as_tuple=True)[0]
             if len(indices_to_remove_based_on_gradient) > 0:
-                print(f"Pruned {len( indices_to_remove_based_on_gradient )} points based on gradients")
+                print(f"Pruned {len( indices_to_remove_based_on_gradient )} points based on Gradient Norm")
             samples_optimization_mask[indices_to_remove_based_on_gradient] = False
 
+            # Prune splats with low scales
+            # They will no longer be optimized and no longer be rendered!
+            # This is intended to remove points
+            # where the optimizer tries to get rid of bad points,
+            # by reducing their scale
+            scale = unpack(splat_weights, Columns.scales).squeeze()
+            scale_small_bools_non_masked = scale < config.pruning_scale_threshold
+            scale_small_bools = scale_small_bools_non_masked & samples_rendering_mask
+            indices_to_remove_based_on_scale = scale_small_bools.nonzero(as_tuple=True)[0]
+            if len(indices_to_remove_based_on_scale) > 0:
+                print(f"Pruned {len( indices_to_remove_based_on_scale )} points based on Scale")
+            samples_optimization_mask[indices_to_remove_based_on_scale] = False
+            samples_rendering_mask[indices_to_remove_based_on_scale] = False
+
         # Every epoch, zero-out the gradients of pruned points.
-        # This should speed up the optimization step, but you won't notice it much, as rendering is the bottleneck
+        # This should speed up the optimization step, but you won't notice it much,
+        # as rendering is a severe bottleneck, not much impacted by the pruning
+        # Make sure this happens after computing gradients, and before optimization
         if current_epoch > 0:
             # We use a cast to satisfy mypy, we know grad is not None
             cast(torch.Tensor, splat_weights.grad).data[~samples_optimization_mask] = 0.0
@@ -226,18 +259,10 @@ def main(config: TrainingConfig) -> None:
                 f"Loss: {current_l1_loss_tensor:.3f}, "
             )
             if config.log_loss_perturbation and do_growth and current_epoch < config.n_loss_perturbation_epochs:
-                message += f" - Loss of previous epoch was perturbed to {perturbed_loss:.3f}."
+                message += f"- Previous Loss perturbed to {perturbed_loss:.3f}."
             print(message)
 
     # Postprocessing
     print(f"Final Loss: {current_l1_loss_tensor}")
     write_loss_graphs(loss_history=loss_history, output_folder=output_folder)
     write_gif_for_folder(output_folder=output_folder)
-
-
-if __name__ == "__main__":
-    main_start_time = time.perf_counter()
-    main(config=load_training_config())
-    main_end_time = time.perf_counter()
-    main_elapsed_time = main_end_time - main_start_time
-    print(f"Done! Took: {main_elapsed_time:.6f} seconds")

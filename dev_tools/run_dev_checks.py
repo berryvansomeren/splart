@@ -16,9 +16,9 @@ def poetry_run(command) -> None:
 
 
 def make_nice() -> None:
-    poetry_run("ruff check ../")
-    poetry_run("black --line-length 120 ../")
-    poetry_run("mypy ../")
+    poetry_run("ruff check .")
+    poetry_run("black --line-length 120 .")
+    poetry_run("mypy .")
 
 
 if __name__ == "__main__":
