@@ -9,9 +9,11 @@ from PIL import Image
 import random
 import matplotlib.pyplot as plt
 
-from splart.training_config import TrainingConfig
+from splart.size import Size
+from splart.training_config import TrainingConfig, get_texture_load_size_for_target_image_load_size
 from splart.grow import in_place_add_samples_starting_from
-from splart.renderer import render_2d_texture_splatting
+from splart.render_batched import render_2d_texture_splats_batched
+from splart.render_sequential import render_2d_texture_splats_sequential
 from splart.splat_components import init_empty_splat_weights, unpack, Columns
 from splart.make_gif import write_gif_for_folder
 
@@ -32,9 +34,13 @@ def _load_target_image(config: TrainingConfig) -> tuple[torch.Tensor, np.ndarray
     return target_image_tensor, target_image_np
 
 
-def _load_texture(config: TrainingConfig) -> torch.Tensor:
+def _load_texture(config: TrainingConfig, overload_texture_load_size : Size | None = None ) -> torch.Tensor:
+    load_size = config.texture_load_size
+    if overload_texture_load_size is not None:
+        load_size = overload_texture_load_size
+
     # PIL uses W,H order!
-    texture_file = Image.open(config.texture_image_path).resize(config.texture_load_size.as_w_h()).convert("RGB")
+    texture_file = Image.open(config.texture_image_path).resize(load_size.as_w_h()).convert("RGB")
     texture_np = np.array(texture_file)  # Shape: (H, W, 3)
     red_channel_np = texture_np[..., 0] / 255.0  # Extract Red channel (H, W)
     texture_tensor = torch.tensor(red_channel_np, dtype=torch.float32, device=config.device)
@@ -95,13 +101,17 @@ def get_perturbed_loss(
     n_loss_perturbation_epochs: int,
     expected_loss_after_perturbation_epochs: float,
 ) -> float:
-    current_epoch_t: float = current_epoch / n_loss_perturbation_epochs
-    current_linear_loss: float = (1 - current_epoch_t) * 1 + current_epoch_t * expected_loss_after_perturbation_epochs
-    current_perturbed_loss: float = (1 - current_epoch_t) * current_linear_loss + current_epoch_t * current_loss
-    return current_perturbed_loss
+    """
+    See dev_tools/ui_simulate_loss.py to get a better felling for how the loss is affected
+    """
+    epoch_t: float = current_epoch / n_loss_perturbation_epochs
+    linear_loss: float = (1 - epoch_t) * 1 + epoch_t * expected_loss_after_perturbation_epochs
+    perturbed_loss: float = (1 - epoch_t) * linear_loss + epoch_t * current_loss
+    return perturbed_loss
 
 
 def run_optimization(config: TrainingConfig) -> None:
+    print(f"DEVICE: {config.device}")
     run_start = datetime.now()
     set_random_seeds()
 
@@ -121,6 +131,7 @@ def run_optimization(config: TrainingConfig) -> None:
     current_sample_end_pointer = 0
     n_total_expected_samples = config.primary_samples + config.backup_samples
     splat_weights = init_empty_splat_weights(device=config.device, n_samples=n_total_expected_samples)
+    splats_weights_for_rendering = splat_weights
 
     # Initial splats
     in_place_add_samples_starting_from(
@@ -186,11 +197,10 @@ def run_optimization(config: TrainingConfig) -> None:
 
         # Render the splats
         splats_weights_for_rendering = splat_weights[samples_rendering_mask]
-        current_image = render_2d_texture_splatting(
+        current_image = render_2d_texture_splats_batched(
             splat_weights=splats_weights_for_rendering,
             texture=texture,
             image_size=config.target_image_load_size,
-            device=config.device,
         )
 
         # Compute loss and gradients
@@ -266,3 +276,81 @@ def run_optimization(config: TrainingConfig) -> None:
     print(f"Final Loss: {current_l1_loss_tensor}")
     write_loss_graphs(loss_history=loss_history, output_folder=output_folder)
     write_gif_for_folder(output_folder=output_folder)
+    write_high_res_result(splats_weights=splats_weights_for_rendering, config=config, output_folder=output_folder)
+
+    DEBUG = True
+    if DEBUG:
+        render_batched(splats_weights_for_rendering, texture, config, output_folder)
+        render_sequential(splats_weights_for_rendering, texture, config, output_folder)
+
+
+def get_image_size_high_res(image_path:str, target_min_extent = 2160, target_max_extent : int = 3840, ) -> Size:
+    image = Image.open( image_path )
+    original_width, original_height = image.size
+
+    # Determine the current min and max extents of the original image
+    original_min_extent = min( original_width, original_height )
+    original_max_extent = max( original_width, original_height )
+
+    # Calculate the scaling factor for both dimensions
+    scale_min = target_min_extent / original_min_extent
+    scale_max = target_max_extent / original_max_extent
+
+    # Choose the larger scaling factor to ensure both dimensions meet the target resolution
+    scale_factor = max( scale_min, scale_max )
+
+    # Calculate the new dimensions based on the chosen scale factor
+    new_width = int( original_width * scale_factor )
+    new_height = int( original_height * scale_factor )
+    new_size = Size(width = new_width, height = new_height)
+    return new_size
+
+
+def write_high_res_result(splats_weights : torch.Tensor, config:TrainingConfig, output_folder:str) -> None:
+    print("Creating High Res result.")
+    image_size_high_res = get_image_size_high_res(config.target_image_path)
+    texture_load_size_high_res = get_texture_load_size_for_target_image_load_size(image_size_high_res)
+
+    # Render on the cpu this time to prevent out of memory errors!
+    config.device = torch.device("cpu")
+    config.texture_load_size = texture_load_size_high_res
+    texture_high_res = _load_texture(config)
+    sequential_rendering_result = render_2d_texture_splats_sequential(
+        splat_weights = splats_weights.detach().cpu(),
+        texture = texture_high_res,
+        image_size = image_size_high_res,
+    )
+
+    # Write the result
+    result_path = os.path.join( output_folder, f"render__high_res.png")
+    _write_image(
+        sequential_rendering_result.cpu().detach().numpy(),
+        result_path
+    )
+    print( f"Wrote High Res result to {result_path}" )
+
+
+def render_batched(splats_weights : torch.Tensor, texture : torch.Tensor, config : TrainingConfig, output_folder:str) -> None:
+    # Render Batched
+    batched_rendering_result = render_2d_texture_splats_batched(
+        splat_weights = splats_weights,
+        texture = texture,
+        image_size = config.target_image_load_size,
+    )
+    _write_image(
+        batched_rendering_result.cpu().detach().numpy(),
+        os.path.join( output_folder, f"render_batched.png" )
+    )
+
+def render_sequential(splats_weights : torch.Tensor, texture : torch.Tensor, config : TrainingConfig, output_folder:str) -> None:
+    # Render Sequential
+    sequential_rendering_result = render_2d_texture_splats_sequential(
+        splat_weights = splats_weights,
+        texture = texture,
+        image_size = config.target_image_load_size,
+    )
+    _write_image(
+        sequential_rendering_result.cpu().detach().numpy(),
+        os.path.join( output_folder, f"render_sequential.png" )
+    )
+

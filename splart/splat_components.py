@@ -1,7 +1,9 @@
+from dataclasses import dataclass
 from enum import Enum
 from typing import Callable
+
+import numpy as np
 import torch
-from torch import Tensor
 
 
 """
@@ -9,10 +11,11 @@ The point of this module is to make it a bit safer/easier to refer to columns in
 Instead of having to hardcode column indices everywhere, we should be able to refer to them by some meaningful name.
 We should also not have to remember when to use what function/inverse to pack/unpack a certain column, 
 like when to use logit/sigmoid and when to use tanh/atanh.
+This is simultaneously an approximation and combination of Named Tensors and TorchTyping.
 """
 
 
-# This enum also makes it easy to loop over the components
+# Using an enum specifically to store the slices to make it easy to loop over the components
 class Columns(Enum):
     scales = slice(0, 1)  # scale
     rotations = slice(1, 2)  # rot
@@ -20,6 +23,7 @@ class Columns(Enum):
     positions = slice(5, 7)  # x, y
 
 
+# Some aliases for terser code
 SCALES = Columns.scales.value
 ROTATIONS = Columns.rotations.value
 COLORS = Columns.colors.value
@@ -53,10 +57,10 @@ def init_empty_splat_weights(device: torch.device, n_samples: int) -> torch.nn.P
 def in_place_pack_into_splat_tensor_starting_from(
     splat_weights: torch.nn.Parameter,
     start_index: int,
-    positions: Tensor,
-    colors: Tensor,
-    scales: Tensor,
-    rotations: Tensor,
+    positions: torch.Tensor,
+    colors: torch.Tensor,
+    scales: torch.Tensor,
+    rotations: torch.Tensor,
 ) -> None:
     n_samples = positions.shape[0]
     column_component_tuples = [
@@ -78,6 +82,33 @@ def get_unpacker_for_columns(columns: Columns) -> Callable:
     return _COLUMN_TO_UNPACKER_FUNCTION_MAP[columns]
 
 
-def unpack(source_tensor: Tensor, columns: Columns) -> Tensor:
+def unpack(source_tensor: torch.Tensor, columns: Columns) -> torch.Tensor:
     unpacker = get_unpacker_for_columns(columns)
     return unpacker(source_tensor[:, columns.value])
+
+
+@dataclass
+class SplatComponents:
+    scales: torch.Tensor
+    rotations: torch.Tensor
+    colors: torch.Tensor
+    positions: torch.Tensor
+
+
+def slice_single_splat(splats: SplatComponents, i: int) -> SplatComponents:
+    return SplatComponents(
+        scales=splats.scales[i],
+        rotations=splats.rotations[i],
+        colors=splats.rotations[i],
+        positions=splats.positions[i],
+    )
+
+
+def unpack_all_components(splat_weights: torch.Tensor) -> SplatComponents:
+    splat_components = SplatComponents(
+        scales=unpack(splat_weights, Columns.scales),
+        rotations=np.pi / 2 * unpack(splat_weights, Columns.rotations),
+        colors=unpack(splat_weights, Columns.colors),
+        positions=unpack(splat_weights, Columns.positions),
+    )
+    return splat_components

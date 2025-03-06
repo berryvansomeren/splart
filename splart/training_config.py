@@ -4,17 +4,7 @@ import math
 from PIL import Image
 import torch
 
-
-@dataclass
-class Size:
-    width: int
-    height: int
-
-    def as_w_h(self) -> tuple[int, int]:
-        return self.width, self.height
-
-    def as_h_w(self) -> tuple[int, int]:
-        return self.height, self.width
+from splart.size import Size
 
 
 @dataclass
@@ -62,15 +52,23 @@ class TrainingConfig:
     expected_loss_after_perturbation_epochs: float
 
 
-def get_scaled_size(image_path: str) -> Size:
+def get_scaled_size(image_path: str, min_dimension_size : int) -> Size:
     image = Image.open(image_path)
     width, height = image.size
     min_dim = min(width, height)
-    scale_factor = 256 / min_dim
+    scale_factor = min_dimension_size / min_dim
     new_width = int(width * scale_factor)
     new_height = int(height * scale_factor)
     # Note that we return H,W!
     return Size(width=new_width, height=new_height)
+
+
+def get_texture_load_size_for_target_image_load_size( target_image_load_size : Size ) -> Size:
+    # H = W, Just match target image load size as closely as possible
+    # The reason is that we cannot scale up textures easily in the current code, only down (need to look into it)
+    texture_load_size_1: int = max( target_image_load_size.as_w_h() )
+    texture_load_size: Size = Size( width = texture_load_size_1, height = texture_load_size_1 )
+    return texture_load_size
 
 
 def make_full_config(
@@ -83,19 +81,15 @@ def make_full_config(
 ) -> TrainingConfig:
     # ----------------
     # target image
-    target_image_load_size = get_scaled_size(target_image_path)  # H, W
+    target_image_load_size = get_scaled_size(target_image_path, min_dimension_size = 265)  # H, W
 
     # ----------------
     # texture image
-    # H = W, Just match target image load size as closely as possible
-    # The reason is that we cannot scale up textures easily in the current code, only down (need to look into it)
-    texture_load_size_1: int = max(target_image_load_size.as_w_h())
-    texture_load_size: Size = Size(width=texture_load_size_1, height=texture_load_size_1)
+    texture_load_size: Size = get_texture_load_size_for_target_image_load_size( target_image_load_size )
 
     # ----------------
     # training
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"DEVICE: {device}")
     learning_rate = 0.01
     display_interval = 1
     n_epochs_finalization_phase = n_epochs_growth_phase
@@ -122,8 +116,6 @@ def make_full_config(
     expected_loss_after_perturbation_epochs = 0.3
 
     assert n_loss_perturbation_epochs <= n_epochs_growth_phase, "Perturbation epochs should be less than growth epochs"
-
-    print(f"Expecting {primary_samples + backup_samples} samples in total")
 
     # ----------------
     training_config = TrainingConfig(

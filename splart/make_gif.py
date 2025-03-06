@@ -49,12 +49,12 @@ def make_gif_for_images(image_paths: list[str]) -> bytes:
 
     original_gif = gif_buffer.getvalue()
     original_size_mib = get_size_mib(original_gif)
-    print(f"GIF is {original_size_mib} MiB.")
+    print(f"GIF is {original_size_mib:.2f} MiB.")
 
     optimized_gif = gifsicle_optimize_in_memory(original_gif)
     size_bytes_optimized = get_size_mib(optimized_gif)
     if size_bytes_optimized != original_size_mib:
-        print(f"Optimizing the GIF brought it from {original_size_mib} MiB to {size_bytes_optimized} MiB")
+        print(f"Optimizing the GIF brought it from {original_size_mib:.2f} MiB to {size_bytes_optimized:.2f} MiB")
 
     return optimized_gif
 

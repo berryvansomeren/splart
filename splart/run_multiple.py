@@ -12,7 +12,7 @@ def make_config(
         target_image_path=target_image_path,
         texture_image_path=texture_image_path,
         primary_samples=15,
-        n_epochs_growth_phase=300,
+        n_epochs_growth_phase=30,  # 300
         growth_interval=1,
         n_growth_samples=1,
     )
@@ -31,7 +31,7 @@ def run_multiple() -> None:
         run_optimization(config=config)
         end_time = time.perf_counter()
         elapsed_time = end_time - start_time
-        print(f"Done with config! Took: {elapsed_time:.6f} seconds")
+        print(f"Done with config! Took: {elapsed_time:.2f} seconds")
     print("Done with all configs!")
 
 

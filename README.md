@@ -12,7 +12,7 @@ Let's call it differentiable painting!
 ### Installation
 
 Just run `poetry install` in the root directory of this repository for basic functionality.
-If you want your gifs to be <span style="color:deepskyblue">*optimized*</span>, 
+If you want your gifs to be *optimized*,
 then you will also need to install [gifsicle](https://formulae.brew.sh/formula/gifsicle)
 in addition to the dependencies in pyproject.toml.
 
@@ -22,10 +22,5 @@ in addition to the dependencies in pyproject.toml.
 
 Add Redraw
 Have fun! Create some art!
-Use difference-image to further guide splat placement
 
-Double check rotation. Do we need to invert it too? 
-- Not high prio, as it's okay to have a definition not human-readable, 
-- as long as the optimizer can optimize correctly
-
-
+Check rotations. Is the 2 PI in the renderer necessary?
