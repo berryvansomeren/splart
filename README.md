@@ -9,22 +9,12 @@ but in a 2D setting. So 2D gaussian splatting. But it also trades gaussian splat
 So 2D texture compositing. But that sounds like normal rasterization, while we use differentiable rendering....
 Let's call it differentiable painting!
 
-### Installation
 
-Just run `poetry install` in the root directory of this repository for basic functionality.
-If you want your gifs to be *optimized*,
-then you will also need to install [gifsicle](https://formulae.brew.sh/formula/gifsicle)
-in addition to the dependencies in pyproject.toml.
-
----
+# WIP!
+Almost done! Just need to update some minor stuff and write the corresponding blogpost. 
 
 ### Todos:
-
    
 - Also store the non-optimized GIF! -> properly clean up the code, update readme above
-
-- fix poetry install the correct torch version
-
 - make a nice gallery!!!
-
 - update blogpost also with streamlit and normal map
