@@ -2,15 +2,13 @@
 name = "splart"
 version = "0.1.0"
 description = ""
-authors = ["Berry <berryvansomeren@gmail.com>"]
+authors = ["Berry van Someren"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
 python = "^3.12"
 numpy = "^2.2.2"
 matplotlib = "^3.10.0"
-requests = "^2.32.3"
-pyyaml = "^6.0.2"
 torch = "^2.6.0"
 
 [tool.poetry.group.dev.dependencies]

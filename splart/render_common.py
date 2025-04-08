@@ -9,7 +9,7 @@ def transform_splat_textures(
 ) -> torch.Tensor:
 
     batch_size = splats.colors.shape[0]
-    _, n_channels, height, width = splat_textures.shape
+    _, _, height, width = splat_textures.shape
     device = splat_textures.device
 
     # Step 1: Rotation and Scaling
@@ -54,7 +54,7 @@ def transform_splat_textures(
 def blend_alpha_colored_on_top(
     splat_layers: torch.Tensor, colors: torch.Tensor, background: torch.Tensor
 ) -> torch.Tensor:
-    batch_size, n_channels, height, width = splat_layers.shape
+    batch_size, _, height, width = splat_layers.shape
 
     # Multiply the grayscale texture by the color (apply foreground color)
     fg_colors = colors.unsqueeze(-1).unsqueeze(-1) * splat_layers  # Multiply color by texture intensity
@@ -80,16 +80,28 @@ def blend_alpha_colored_on_top(
     return final_image
 
 
-def pad_extend_texture(image_size: Size, texture: torch.Tensor, batch_size: int) -> torch.Tensor:
+def pad_extend_textures(image_size: Size, textures: torch.Tensor, batch_size: int) -> torch.Tensor:
     """
     Pad the texture to match the target image size while keeping it centered.
     """
-    pad_h = image_size.height - texture.shape[1]
-    pad_w = image_size.width - texture.shape[2]
+    pad_h = image_size.height - textures.shape[2]
+    pad_w = image_size.width - textures.shape[3]
+
+    assert pad_h >= 0, "Texture load size is larger than image load size, you will be clipping your textures! - Height"
+    assert pad_w >= 0, "Texture load size is larger than image load size, you will be clipping your textures! - Width"
+
     # Pad on all sides while also compensating for rounding errors
     padding = (pad_w // 2, pad_w // 2 + pad_w % 2, pad_h // 2, pad_h // 2 + pad_h % 2)
-    texture_padded = torch.nn.functional.pad(texture, padding, "constant", 0)  # Pad
+    textures_padded = torch.nn.functional.pad(textures, padding, "constant", 0)  # Pad
 
-    # Return the single-channel texture expanded for the batch size
-    texture_batch = texture_padded.unsqueeze(0).expand(batch_size, -1, -1, -1)  # Shape: (batch_size, 1, H, W)
-    return texture_batch
+    # Since the positions of the splats are already random,
+    # we won't randomize the texture, but just cycle through them.
+
+    # Determine how many full cycles we need
+    full_cycles = batch_size // len(textures)
+    remaining = batch_size % len(textures)
+    # Repeat full cycles and add remaining textures
+    cyclic_textures_batch = torch.cat(
+        [textures_padded.repeat(full_cycles, 1, 1, 1), textures_padded[:remaining]], dim=0
+    )
+    return cyclic_textures_batch

@@ -1,6 +1,8 @@
+import json
+from dataclasses import asdict
 import numpy as np
 import torch
-import os
+
 import time
 from typing import cast
 from torch.optim import Adam
@@ -8,18 +10,21 @@ from datetime import datetime
 from PIL import Image
 import random
 import matplotlib.pyplot as plt
+from pathlib import Path
+from typing import Any
 
 from splart.size import Size
 from splart.training_config import TrainingConfig, get_texture_load_size_for_target_image_load_size
 from splart.grow import in_place_add_samples_starting_from
 from splart.render_batched import render_2d_texture_splats_batched
 from splart.render_sequential import render_2d_texture_splats_sequential
-from splart.splat_components import init_empty_splat_weights, unpack, Columns
+from splart.splat_components import init_empty_splat_weights, decode, Columns
 from splart.make_gif import write_gif_for_folder
+from splart.importance_sampling import get_difference_image, get_gradients, gradients_to_normal_map
+from splart.loss_perturbation import get_perturbed_loss
 
 
-def set_random_seeds() -> None:
-    universal_seed = 1337
+def set_random_seeds(universal_seed: int) -> None:
     random.seed(universal_seed)
     np.random.seed(universal_seed)
     torch.manual_seed(universal_seed)
@@ -30,30 +35,45 @@ def _load_target_image(config: TrainingConfig) -> tuple[torch.Tensor, np.ndarray
     # PIL uses W,H order!
     image_file = Image.open(config.target_image_path).resize(config.target_image_load_size.as_w_h()).convert("RGB")
     target_image_np = np.array(image_file) / 255.0
-    target_image_tensor = torch.tensor(target_image_np, dtype=torch.float32, device=config.device)
-    return target_image_tensor, target_image_np
+    target_image_tensor_hwc = torch.tensor(target_image_np, dtype=torch.float32, device=config.device)
+    return target_image_tensor_hwc, target_image_np
 
 
-def _load_texture(config: TrainingConfig, overload_texture_load_size : Size | None = None ) -> torch.Tensor:
+def _load_textures(config: TrainingConfig) -> torch.Tensor:
     load_size = config.texture_load_size
-    if overload_texture_load_size is not None:
-        load_size = overload_texture_load_size
+    individual_textures = []
+    for image_path in Path(config.texture_directory_path).glob("*.png"):
+        # PIL uses W,H order!
+        current_texture_file = Image.open(image_path).resize(load_size.as_w_h()).convert("RGB")
+        current_texture_np = np.array(current_texture_file)  # Shape: (H, W, 3)
+        current_texture_red_channel_np = current_texture_np[..., 0] / 255.0  # Extract Red channel (H, W)
+        current_texture_tensor = torch.tensor(current_texture_red_channel_np, dtype=torch.float32, device=config.device)
+        current_texture_tensor = current_texture_tensor.unsqueeze(0)  # Add channel dimension (1, H, W)
+        individual_textures.append(current_texture_tensor)
 
-    # PIL uses W,H order!
-    texture_file = Image.open(config.texture_image_path).resize(load_size.as_w_h()).convert("RGB")
-    texture_np = np.array(texture_file)  # Shape: (H, W, 3)
-    red_channel_np = texture_np[..., 0] / 255.0  # Extract Red channel (H, W)
-    texture_tensor = torch.tensor(red_channel_np, dtype=torch.float32, device=config.device)
-    texture = texture_tensor.unsqueeze(0)  # Add channel dimension (1, H, W)
-    return texture
+    textures = torch.stack(individual_textures)
+    return textures
 
 
-def _write_image(image_array: np.ndarray, image_path: str) -> None:
+def _write_image(image_array: np.ndarray, image_path: Path) -> None:
     img = Image.fromarray((image_array * 255).astype(np.uint8))
-    img.save(image_path)
+    img.save(str(image_path))
 
 
-def write_loss_graphs(loss_history: list[tuple[float, float]], output_folder: str) -> None:
+def _write_config_json(config: TrainingConfig, json_path: Path) -> None:
+    class ConfigJSONEncoder(json.JSONEncoder):
+        def default(self, obj: Any):
+            if isinstance(obj, torch.device):
+                return str(obj)  # Convert torch.device to string (e.g., "cuda" or "cpu")
+            if isinstance(obj, Size):
+                return {"width": obj.width, "height": obj.height}  # Convert SizeXY to a dictionary
+            return super().default(obj)
+
+    with open(str(json_path), "w") as f:
+        json.dump(asdict(config), f, indent=4, cls=ConfigJSONEncoder)
+
+
+def write_loss_graphs(loss_history: list[tuple[float, float]], output_directory: Path) -> None:
     epoch_durations, epoch_losses = zip(*loss_history)
 
     plt.figure()
@@ -63,8 +83,8 @@ def write_loss_graphs(loss_history: list[tuple[float, float]], output_folder: st
     plt.title("Training Loss Over Epochs")
     plt.legend()
     plt.grid()
-    file_path = os.path.join(output_folder, "loss_over_epochs.png")
-    plt.savefig(file_path, dpi=300)
+    file_path = output_directory / "loss_over_epochs.png"
+    plt.savefig(str(file_path), dpi=300)
     print(f"Wrote 'Loss over Epochs'-Graph to {file_path}")
 
     plt.figure()
@@ -75,8 +95,8 @@ def write_loss_graphs(loss_history: list[tuple[float, float]], output_folder: st
     plt.title("Training Loss Over Time")
     plt.legend()
     plt.grid()
-    file_path = os.path.join(output_folder, "loss_over_time.png")
-    plt.savefig(file_path, dpi=300)
+    file_path = output_directory / "loss_over_time.png"
+    plt.savefig(str(file_path), dpi=300)
     print(f"Wrote 'Loss over Time'-Graph to {file_path}")
 
 
@@ -95,55 +115,41 @@ def init_persistent_mask(config: TrainingConfig) -> torch.Tensor:
     return persistent_mask
 
 
-def get_perturbed_loss(
-    current_loss: float,
-    current_epoch: int,
-    n_loss_perturbation_epochs: int,
-    expected_loss_after_perturbation_epochs: float,
-) -> float:
-    """
-    See dev_tools/ui_simulate_loss.py to get a better felling for how the loss is affected
-    """
-    epoch_t: float = current_epoch / n_loss_perturbation_epochs
-    linear_loss: float = (1 - epoch_t) * 1 + epoch_t * expected_loss_after_perturbation_epochs
-    perturbed_loss: float = (1 - epoch_t) * linear_loss + epoch_t * current_loss
-    return perturbed_loss
-
-
 def run_optimization(config: TrainingConfig) -> None:
     print(f"DEVICE: {config.device}")
     run_start = datetime.now()
-    set_random_seeds()
+    set_random_seeds(config.universal_random_seed)
 
-    output_folder = "output/" + run_start.strftime("%Y_%m_%d-%H_%M_%S")
-    print(f"Writing output to: {output_folder}")
-    os.makedirs(output_folder, exist_ok=True)
+    output_directory = Path("output") / run_start.strftime("%Y_%m_%d-%H_%M_%S")
+    print(f"Writing output to: {output_directory}")
+    output_directory.mkdir(parents=True, exist_ok=True)
 
-    target_image, target_image_np = _load_target_image(config)
-    texture = _load_texture(config)
+    config_json_path = output_directory / "config.json"
+    print(f"Writing config json to {config_json_path}")
+    _write_config_json(config=config, json_path=config_json_path)
 
-    scaled_input_image_path = os.path.join(output_folder, "input_image.png")
+    target_image_hwc, target_image_np = _load_target_image(config)
+    scaled_input_image_path = output_directory / "input_image.png"
     print(f"Writing scaled input image to {scaled_input_image_path}")
-    _write_image(image_array=target_image_np, image_path=scaled_input_image_path)
+    _write_image(image_array=target_image_hwc.clone().detach().cpu().numpy(), image_path=scaled_input_image_path)
+
+    target_gradients = get_gradients(target_image_hwc)
+    gradient_normal_map = gradients_to_normal_map(target_gradients)
+    normal_map_image_path = output_directory / "input_normal_map.png"
+    print(f"Writing gradient normal map to {normal_map_image_path}")
+    _write_image(image_array=gradient_normal_map.cpu().numpy(), image_path=normal_map_image_path)
+
+    textures = _load_textures(config)
+    current_image = torch.zeros_like(target_image_hwc)
 
     current_l1_loss_value = 1.0
     perturbed_loss = 1.0
     current_sample_end_pointer = 0
     n_total_expected_samples = config.primary_samples + config.backup_samples
-    splat_weights = init_empty_splat_weights(device=config.device, n_samples=n_total_expected_samples)
-    splats_weights_for_rendering = splat_weights
-
-    # Initial splats
-    in_place_add_samples_starting_from(
-        config=config,
-        splat_weights=splat_weights,
-        start_index=current_sample_end_pointer,
-        n_samples=config.primary_samples,
-        target_image_np=target_image_np,
-        current_l1_loss=current_l1_loss_value,
-        current_epoch=0,
+    splat_weights: torch.nn.Parameter = init_empty_splat_weights(
+        device=config.device, n_samples=n_total_expected_samples
     )
-    current_sample_end_pointer += config.primary_samples
+    splats_weights_for_rendering: torch.Tensor = splat_weights
 
     # We have two masks to apply to our weights
     # Remember that splat_weights is a buffer that already allocated memory for samples to be added later
@@ -161,36 +167,38 @@ def run_optimization(config: TrainingConfig) -> None:
     n_total_epochs = config.n_epochs_growth_phase + config.n_epochs_finalization_phase
     for current_epoch in range(n_total_epochs):
 
-        if config.use_loss_perturbation and current_epoch == config.n_loss_perturbation_epochs:
-            print("Perturbation phase DONE. Loss used for rendering will no longer be perturbed!")
+        if config.use_loss_perturbation and current_epoch == config.n_loss_interpolation_epochs:
+            print(
+                f"Epoch: {current_epoch}/{n_total_epochs-1} - "
+                "Loss Interpolation phase DONE. Loss used for rendering will no longer be perturbed!"
+            )
 
         if current_epoch == config.n_epochs_growth_phase:
-            print("Growth phase DONE. Finalization phase starts!")
+            print(f"Epoch: {current_epoch}/{n_total_epochs-1} - Growth phase DONE. Finalization phase starts!")
 
         # Growth phase
-        do_growth = current_epoch % config.growth_interval == 0 and 0 < current_epoch < config.n_epochs_growth_phase
-        if do_growth:
-            if current_epoch < config.n_loss_perturbation_epochs:
-                perturbed_loss = get_perturbed_loss(
-                    current_loss=current_l1_loss_value,
-                    current_epoch=current_epoch,
-                    n_loss_perturbation_epochs=config.n_loss_perturbation_epochs,
-                    expected_loss_after_perturbation_epochs=config.expected_loss_after_perturbation_epochs,
-                )
-                current_l1_loss_value = perturbed_loss
-
+        do_growth = current_epoch % config.growth_interval == 0 and current_epoch < config.n_epochs_growth_phase
+        if do_growth or current_epoch == 0:
+            perturbed_loss = get_perturbed_loss(
+                config=config,
+                current_loss=current_l1_loss_value,
+                current_epoch=current_epoch,
+            )
+            difference_image = get_difference_image(current_image, target_image_hwc)
+            n_growth_samples_used = config.primary_samples if current_epoch == 0 else config.n_growth_samples
             in_place_add_samples_starting_from(
                 config=config,
                 splat_weights=splat_weights,
                 start_index=current_sample_end_pointer,
-                n_samples=config.n_growth_samples,
-                target_image_np=target_image_np,
-                current_l1_loss=current_l1_loss_value,
-                current_epoch=current_epoch,
+                n_samples=n_growth_samples_used,
+                target_image=target_image_hwc,
+                current_l1_loss=perturbed_loss,
+                difference_image=difference_image,
+                target_gradients=target_gradients,
             )
 
             # Update both the rendering and optimization masks with the newly added splats
-            new_sample_end_pointer = current_sample_end_pointer + config.n_growth_samples
+            new_sample_end_pointer = current_sample_end_pointer + n_growth_samples_used
             samples_rendering_mask[current_sample_end_pointer:new_sample_end_pointer] = True
             samples_optimization_mask[current_sample_end_pointer:new_sample_end_pointer] = True
             current_sample_end_pointer = new_sample_end_pointer
@@ -199,12 +207,12 @@ def run_optimization(config: TrainingConfig) -> None:
         splats_weights_for_rendering = splat_weights[samples_rendering_mask]
         current_image = render_2d_texture_splats_batched(
             splat_weights=splats_weights_for_rendering,
-            texture=texture,
+            textures=textures,
             image_size=config.target_image_load_size,
         )
 
         # Compute loss and gradients
-        current_l1_loss_tensor = torch.nn.L1Loss()(current_image, target_image)
+        current_l1_loss_tensor = torch.nn.L1Loss()(current_image, target_image_hwc)
         current_l1_loss_value = current_l1_loss_tensor.item()
         optimizer.zero_grad()
         current_l1_loss_tensor.backward()
@@ -232,7 +240,7 @@ def run_optimization(config: TrainingConfig) -> None:
             # This is intended to remove points
             # where the optimizer tries to get rid of bad points,
             # by reducing their scale
-            scale = unpack(splat_weights, Columns.scales).squeeze()
+            scale = decode(splat_weights, Columns.scales).squeeze()
             scale_small_bools_non_masked = scale < config.pruning_scale_threshold
             scale_small_bools = scale_small_bools_non_masked & samples_rendering_mask
             indices_to_remove_based_on_scale = scale_small_bools.nonzero(as_tuple=True)[0]
@@ -250,7 +258,9 @@ def run_optimization(config: TrainingConfig) -> None:
             cast(torch.Tensor, splat_weights.grad).data[~samples_optimization_mask] = 0.0
 
         # Optimize
-        optimizer.step()
+        if current_epoch == n_total_epochs - 1:
+            print('Dont optimize after final epoch')
+            optimizer.step()
         epoch_end = time.perf_counter()
         loss_history.append((epoch_end, current_l1_loss_tensor.item()))
         epoch_time = epoch_end - last_epoch_end
@@ -258,8 +268,7 @@ def run_optimization(config: TrainingConfig) -> None:
 
         # Logging
         if current_epoch % config.display_interval == 0 or current_epoch == n_total_epochs - 1:
-            current_image_np = current_image.cpu().detach().numpy()
-            _write_image(current_image_np, os.path.join(output_folder, f"{current_epoch}.jpg"))
+            _write_image(current_image.clone().detach().cpu().numpy(), output_directory / f"{current_epoch}_batched.jpg")
             n_rendering_samples = samples_rendering_mask.sum().item()
             n_optimization_samples = samples_optimization_mask.sum().item()
             message = (
@@ -268,45 +277,44 @@ def run_optimization(config: TrainingConfig) -> None:
                 f"Points: {n_optimization_samples}/{n_rendering_samples}/{n_total_expected_samples}, "
                 f"Loss: {current_l1_loss_tensor:.3f}, "
             )
-            if config.log_loss_perturbation and do_growth and current_epoch < config.n_loss_perturbation_epochs:
-                message += f"- Previous Loss perturbed to {perturbed_loss:.3f}."
+            if config.log_loss_perturbation and do_growth:
+                message += f"- Previous Loss was perturbed to {perturbed_loss:.3f}."
             print(message)
 
     # Postprocessing
     print(f"Final Loss: {current_l1_loss_tensor}")
-    write_loss_graphs(loss_history=loss_history, output_folder=output_folder)
-    write_gif_for_folder(output_folder=output_folder)
-    write_high_res_result(splats_weights=splats_weights_for_rendering, config=config, output_folder=output_folder)
-
-    DEBUG = True
-    if DEBUG:
-        render_batched(splats_weights_for_rendering, texture, config, output_folder)
-        render_sequential(splats_weights_for_rendering, texture, config, output_folder)
+    write_loss_graphs(loss_history=loss_history, output_directory=output_directory)
+    write_gif_for_folder(output_directory=output_directory)
+    write_high_res_result(splats_weights=splats_weights_for_rendering, config=config, output_directory=output_directory)
 
 
-def get_image_size_high_res(image_path:str, target_min_extent = 2160, target_max_extent : int = 3840, ) -> Size:
-    image = Image.open( image_path )
+def get_image_size_high_res(
+    image_path: str,
+    target_min_extent=2160,
+    target_max_extent: int = 3840,
+) -> Size:
+    image = Image.open(image_path)
     original_width, original_height = image.size
 
     # Determine the current min and max extents of the original image
-    original_min_extent = min( original_width, original_height )
-    original_max_extent = max( original_width, original_height )
+    original_min_extent = min(original_width, original_height)
+    original_max_extent = max(original_width, original_height)
 
     # Calculate the scaling factor for both dimensions
     scale_min = target_min_extent / original_min_extent
     scale_max = target_max_extent / original_max_extent
 
     # Choose the larger scaling factor to ensure both dimensions meet the target resolution
-    scale_factor = max( scale_min, scale_max )
+    scale_factor = max(scale_min, scale_max)
 
     # Calculate the new dimensions based on the chosen scale factor
-    new_width = int( original_width * scale_factor )
-    new_height = int( original_height * scale_factor )
-    new_size = Size(width = new_width, height = new_height)
+    new_width = int(original_width * scale_factor)
+    new_height = int(original_height * scale_factor)
+    new_size = Size(width=new_width, height=new_height)
     return new_size
 
 
-def write_high_res_result(splats_weights : torch.Tensor, config:TrainingConfig, output_folder:str) -> None:
+def write_high_res_result(splats_weights: torch.Tensor, config: TrainingConfig, output_directory: Path) -> None:
     print("Creating High Res result.")
     image_size_high_res = get_image_size_high_res(config.target_image_path)
     texture_load_size_high_res = get_texture_load_size_for_target_image_load_size(image_size_high_res)
@@ -314,43 +322,14 @@ def write_high_res_result(splats_weights : torch.Tensor, config:TrainingConfig, 
     # Render on the cpu this time to prevent out of memory errors!
     config.device = torch.device("cpu")
     config.texture_load_size = texture_load_size_high_res
-    texture_high_res = _load_texture(config)
+    textures_high_res = _load_textures(config)
     sequential_rendering_result = render_2d_texture_splats_sequential(
-        splat_weights = splats_weights.detach().cpu(),
-        texture = texture_high_res,
-        image_size = image_size_high_res,
+        splat_weights=splats_weights.detach().cpu(),
+        textures=textures_high_res,
+        image_size=image_size_high_res,
     )
 
     # Write the result
-    result_path = os.path.join( output_folder, f"render__high_res.png")
-    _write_image(
-        sequential_rendering_result.cpu().detach().numpy(),
-        result_path
-    )
-    print( f"Wrote High Res result to {result_path}" )
-
-
-def render_batched(splats_weights : torch.Tensor, texture : torch.Tensor, config : TrainingConfig, output_folder:str) -> None:
-    # Render Batched
-    batched_rendering_result = render_2d_texture_splats_batched(
-        splat_weights = splats_weights,
-        texture = texture,
-        image_size = config.target_image_load_size,
-    )
-    _write_image(
-        batched_rendering_result.cpu().detach().numpy(),
-        os.path.join( output_folder, f"render_batched.png" )
-    )
-
-def render_sequential(splats_weights : torch.Tensor, texture : torch.Tensor, config : TrainingConfig, output_folder:str) -> None:
-    # Render Sequential
-    sequential_rendering_result = render_2d_texture_splats_sequential(
-        splat_weights = splats_weights,
-        texture = texture,
-        image_size = config.target_image_load_size,
-    )
-    _write_image(
-        sequential_rendering_result.cpu().detach().numpy(),
-        os.path.join( output_folder, f"render_sequential.png" )
-    )
-
+    result_path = output_directory / "render__high_res.png"
+    _write_image(sequential_rendering_result.cpu().detach().numpy(), result_path)
+    print(f"Wrote High Res result to {result_path}")

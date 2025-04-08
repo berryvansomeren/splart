@@ -20,7 +20,11 @@ in addition to the dependencies in pyproject.toml.
 
 ### Todos:
 
-Add Redraw
-Have fun! Create some art!
+   
+- Also store the non-optimized GIF! -> properly clean up the code, update readme above
 
-Check rotations. Is the 2 PI in the renderer necessary?
+- fix poetry install the correct torch version
+
+- make a nice gallery!!!
+
+- update blogpost also with streamlit and normal map

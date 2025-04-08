@@ -1,29 +1,29 @@
 import torch
 from splart.size import Size
 from splart.splat_components import unpack_all_components
-from splart.render_common import blend_alpha_colored_on_top, transform_splat_textures, pad_extend_texture
+from splart.render_common import blend_alpha_colored_on_top, transform_splat_textures, pad_extend_textures
 
 
 def render_2d_texture_splats_batched(
     splat_weights,
-    texture: torch.Tensor,
+    textures: torch.Tensor,
     image_size: Size,
 ):
     """
     Batched rendering is faster but more memory intensive.
-    NOT suitable for rendering 4k images!
-    Preferred during optimization as long as things fit in memory (especially VRAM when using CUDA).
+    NOT suitable for rendering 4k images on a normal machine!
+    Preferred during optimization as long as things fit in memory.
     """
 
     n_splats = splat_weights.shape[0]
     splats = unpack_all_components(splat_weights)
 
     # Prepare all splats textures as one big tensor!
-    splat_textures = pad_extend_texture(image_size, texture, n_splats)
+    splat_textures = pad_extend_textures(image_size, textures, n_splats)
     transformed_textures = transform_splat_textures(splats=splats, splat_textures=splat_textures)
 
     # process all splats in one big batch!
-    background = torch.zeros((image_size.height, image_size.width, 3), dtype=torch.float32, device=texture.device)
+    background = torch.zeros((image_size.height, image_size.width, 3), dtype=torch.float32, device=textures.device)
     final_image = blend_alpha_colored_on_top(
         splat_layers=transformed_textures, colors=splats.colors, background=background
     )

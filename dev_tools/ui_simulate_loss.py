@@ -34,6 +34,7 @@ epochs = st.sidebar.slider("Number of Epochs", 10, 500, 200, 10)
 initial_loss = st.sidebar.slider("Initial Loss", 0.1, 1.0, 0.4, 0.1)  # Default set to 0.3
 decay_rate = st.sidebar.slider("Decay Rate", 0.0, 0.10, 0.01, 0.01)
 noise_level = st.sidebar.slider("Noise Level", 0.0, 0.1, 0.01, 0.01)
+loss_multiplier = st.sidebar.slider("Loss Multiplier", 0.0, 5.0, 2.5, 0.5)
 
 # Generate Epochs
 epoch_range = np.arange(0, epochs, 1)
@@ -44,24 +45,24 @@ simulated_loss = initial_loss * np.exp(-decay_rate * epoch_range) + np.random.no
 )
 
 # Slider to choose t for the straight lines
-t = st.sidebar.slider("Number of epochs for loss perturbation", 0, epochs, epochs // 2, 1)
+t = st.sidebar.slider("Number of epochs for loss perturbation", 0, epochs, epochs // 2, 5)
 # Slider to choose t for the straight lines
 expected_loss_at_t = st.sidebar.slider("Expected loss when loss perturbation ends", 0.0, 1.0, 0.4, 0.1)
 
-# Linear Loss: From (0,1) to (t, L(t))
-linear_loss_limits_xs = [0, t]
-linear_loss_limits_ys = [1, expected_loss_at_t]
-
 # Interpolated Loss: Interpolating between the linear loss and L(t), stopping at t
-sample_xs = np.linspace(0, t, t)
-linear_loss_ys = (1 - sample_xs / t) * 1 + (sample_xs / t) * expected_loss_at_t
-perturbed_loss_ys = (1 - sample_xs / t) * linear_loss_ys + (sample_xs / t) * simulated_loss[:t]
+linear_loss_xs = np.linspace(0, t, t)
+linear_loss_ys = (1 - linear_loss_xs / t) * 1 + (linear_loss_xs / t) * expected_loss_at_t
+perturbed_loss_ys_interpolated = (1 - linear_loss_xs / t) * linear_loss_ys + (linear_loss_xs / t) * simulated_loss[
+    :t
+] * loss_multiplier
+perturbed_loss_ys_rest = simulated_loss[t:] * loss_multiplier
+perturbed_loss_ys = np.concatenate((perturbed_loss_ys_interpolated, perturbed_loss_ys_rest), axis=0)
 
 # Plot the Loss Curve
 fig, ax = plt.subplots()
 ax.plot(epoch_range, simulated_loss, label="Simulated Loss Curve", color="blue")
-ax.plot(sample_xs, linear_loss_ys, label="Linear Loss Curve", color="red", linestyle="dotted")
-ax.plot(sample_xs, perturbed_loss_ys, label="Perturbed Loss Curve", color="green", linestyle="--")
+ax.plot(linear_loss_xs, linear_loss_ys, label="Linear Loss Curve", color="red", linestyle="dotted")
+ax.plot(epoch_range, perturbed_loss_ys, label="Perturbed Loss Curve", color="green", linestyle="--")
 
 # Labels and Legend
 ax.set_xlabel("Epochs")
