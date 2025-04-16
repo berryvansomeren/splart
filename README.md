@@ -2,7 +2,7 @@
 
 **The related blogpost can be found [HERE!](https://www.berryvansomeren.com/posts/splart) ✨**
 
-Splart is an alternative approach to the ideas of Drarwing.
+Splart is an alternative approach to the ideas of [Drarwing](https://github.com/berryvansomeren/drarwing_web).
 Instead of the genetic algorithm drarwing uses, 
 splart uses differential rendering and backpropagation to generate images.
 
