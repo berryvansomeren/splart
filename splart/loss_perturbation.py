@@ -30,7 +30,7 @@ def get_perturbed_loss(
     current_loss: float,
     current_epoch: int,
 ) -> float:
-    perturbed_loss = min(1.0, current_loss * config.base_loss_multiplier )
+    perturbed_loss = min(1.0, current_loss * config.base_loss_multiplier)
     if current_epoch < config.n_loss_interpolation_epochs:
         interpolated_perturbed_loss = _get_interpolated_loss(
             config=config,

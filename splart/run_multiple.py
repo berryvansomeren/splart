@@ -1,4 +1,3 @@
-from copy import deepcopy
 import time
 
 from splart.training_config import TrainingConfig, make_full_config_with_defaults
@@ -22,64 +21,68 @@ def make_config(
 def run_multiple() -> None:
     configs = [
         make_config(
-            target_image_path = "./input/whale.jpg",
-            texture_directory_path = "./brushes/watercolor/",
+            target_image_path="./input/whale.jpg",
+            texture_directory_path="./brushes/watercolor/",
         ),
         make_config(
-            target_image_path = "./input/lemur.jpg",
-            texture_directory_path = "./brushes/sketch/",
+            target_image_path="./input/lemur.jpg",
+            texture_directory_path="./brushes/sketch/",
         ),
         make_config(
             target_image_path="./input/kingfisher.jpg",
             texture_directory_path="./brushes/oil/",
         ),
         make_config(
-            target_image_path = "./input/bird.jpg",
-            texture_directory_path = "./brushes/sketch/",
+            target_image_path="./input/bird.jpg",
+            texture_directory_path="./brushes/sketch/",
         ),
         make_config(
-            target_image_path = "./input/bird.jpg",
-            texture_directory_path = "./brushes/watercolor/",
+            target_image_path="./input/bird.jpg",
+            texture_directory_path="./brushes/watercolor/",
         ),
         make_config(
-            target_image_path = "./input/young_deer.jpg",
-            texture_directory_path = "./brushes/canvas/",
+            target_image_path="./input/young_deer.jpg",
+            texture_directory_path="./brushes/canvas/",
         ),
         make_config(
-            target_image_path = "./input/zion.jpg",
-            texture_directory_path = "./brushes/watercolor/",
+            target_image_path="./input/zion.jpg",
+            texture_directory_path="./brushes/watercolor/",
         ),
         make_config(
-            target_image_path = "./input/florence.jpg",
-            texture_directory_path = "./brushes/watercolor/",
+            target_image_path="./input/florence.jpg",
+            texture_directory_path="./brushes/watercolor/",
         ),
         make_config(
-            target_image_path = "./input/florence.jpg",
-            texture_directory_path = "./brushes/oil/",
+            target_image_path="./input/florence.jpg",
+            texture_directory_path="./brushes/oil/",
         ),
         make_config(
-            target_image_path = "./input/city.jpg",
-            texture_directory_path = "./brushes/oil/",
+            target_image_path="./input/city.jpg",
+            texture_directory_path="./brushes/oil/",
         ),
         make_config(
-            target_image_path = "./input/deer.jpg",
-            texture_directory_path = "./brushes/sketch/",
+            target_image_path="./input/deer.jpg",
+            texture_directory_path="./brushes/sketch/",
         ),
         make_config(
-            target_image_path = "./input/flamingo.jpg",
-            texture_directory_path = "./brushes/oil/",
+            target_image_path="./input/deer.jpg",
+            texture_directory_path="./brushes/canvas/",
         ),
         make_config(
-            target_image_path = "./input/flamingo.jpg",
-            texture_directory_path = "./brushes/canvas/",
+            target_image_path="./input/flamingo.jpg",
+            texture_directory_path="./brushes/oil/",
         ),
         make_config(
-            target_image_path = "./input/tiger.jpg",
-            texture_directory_path = "./brushes/watercolor/",
+            target_image_path="./input/flamingo.jpg",
+            texture_directory_path="./brushes/canvas/",
         ),
         make_config(
-            target_image_path = "./input/frog.jpg",
-            texture_directory_path = "./brushes/canvas/",
+            target_image_path="./input/tiger.jpg",
+            texture_directory_path="./brushes/watercolor/",
+        ),
+        make_config(
+            target_image_path="./input/frog.jpg",
+            texture_directory_path="./brushes/canvas/",
         ),
     ]
     for i, config in enumerate(configs):

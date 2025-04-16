@@ -26,7 +26,7 @@ def render_2d_texture_splats_sequential(
     for i in range(n_splats):
         current_splat = slice_single_splat(splats, i)
         current_color = current_splat.colors[0]
-        current_texture = splat_textures_padded[ i % n_textures ].unsqueeze(0)
+        current_texture = splat_textures_padded[i % n_textures].unsqueeze(0)
 
         transformed_texture = transform_splat_textures(splats=current_splat, splat_textures=current_texture)
         final_image = blend_alpha_colored_on_top(

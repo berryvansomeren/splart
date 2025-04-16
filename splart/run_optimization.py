@@ -258,9 +258,7 @@ def run_optimization(config: TrainingConfig) -> None:
             cast(torch.Tensor, splat_weights.grad).data[~samples_optimization_mask] = 0.0
 
         # Optimize
-        if current_epoch == n_total_epochs - 1:
-            print('Dont optimize after final epoch')
-            optimizer.step()
+        optimizer.step()
         epoch_end = time.perf_counter()
         loss_history.append((epoch_end, current_l1_loss_tensor.item()))
         epoch_time = epoch_end - last_epoch_end
@@ -268,7 +266,9 @@ def run_optimization(config: TrainingConfig) -> None:
 
         # Logging
         if current_epoch % config.display_interval == 0 or current_epoch == n_total_epochs - 1:
-            _write_image(current_image.clone().detach().cpu().numpy(), output_directory / f"{current_epoch}_batched.jpg")
+            _write_image(
+                current_image.clone().detach().cpu().numpy(), output_directory / f"{current_epoch}_batched.jpg"
+            )
             n_rendering_samples = samples_rendering_mask.sum().item()
             n_optimization_samples = samples_optimization_mask.sum().item()
             message = (
@@ -281,11 +281,24 @@ def run_optimization(config: TrainingConfig) -> None:
                 message += f"- Previous Loss was perturbed to {perturbed_loss:.3f}."
             print(message)
 
-    # Postprocessing
-    print(f"Final Loss: {current_l1_loss_tensor}")
+    # Final evaluation, as we did a final optimizer step that remained un-evaluated
+    final_splat_weights_for_rendering = splat_weights[samples_rendering_mask]
+    final_image = render_2d_texture_splats_batched(
+        splat_weights=final_splat_weights_for_rendering,
+        textures=textures,
+        image_size=config.target_image_load_size,
+    )
+    final_l1_loss_tensor = torch.nn.L1Loss()(final_image, target_image_hwc)
+    final_l1_loss_value = final_l1_loss_tensor.item()
+
+    # Write Final Results
+    print(f"Final Loss: {final_l1_loss_value}")
     write_loss_graphs(loss_history=loss_history, output_directory=output_directory)
     write_gif_for_folder(output_directory=output_directory)
-    write_high_res_result(splats_weights=splats_weights_for_rendering, config=config, output_directory=output_directory)
+    _write_image(final_image.detach().cpu().numpy(), output_directory / "final_batched.jpg")
+    write_high_res_result(
+        splats_weights=final_splat_weights_for_rendering, config=config, output_directory=output_directory
+    )
 
 
 def get_image_size_high_res(
